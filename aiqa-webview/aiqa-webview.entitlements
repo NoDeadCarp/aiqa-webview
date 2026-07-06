@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 继续保留 App Sandbox。 -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- 保留模板里默认打开的用户手动选择文件的只读访问能力。 -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <!-- 关键修复：允许 App 主动发起网络请求，否则 macOS 沙盒下 WebView 可能打不开外部网站。 -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>
