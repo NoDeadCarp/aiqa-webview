@@ -63,10 +63,69 @@ struct ContentView: View {
                         .fill(Color.accentColor.opacity(0.16))
                 )
                 .disabled(viewModel.isRunningFixedScript || viewModel.isSendingToAPI)
+
+                // 自动答题按钮：点击开始循环答题；再点停止
+                Button {
+                    if viewModel.isAutoMode {
+                        viewModel.stopAutoLoop(reason: "已手动停止。")
+                    } else {
+                        viewModel.startAutoLoop()
+                    }
+                } label: {
+                    Image(systemName: viewModel.isAutoMode ? "stop.fill" : "forward.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    Circle()
+                        .fill(viewModel.isAutoMode ? Color.red.opacity(0.18) : Color.green.opacity(0.20))
+                )
+#if os(macOS)
+                .help("自动答题：点击开始/停止循环")
+#endif
+
+                // DOM 诊断按钮：查看页面结构，方便调试选择器
+                Button {
+                    viewModel.captureDOM()
+                } label: {
+                    Image(systemName: "rectangle.and.text.magnifyingglass")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    Circle()
+                        .fill(Color.orange.opacity(0.18))
+                )
+#if os(macOS)
+                .help("DOM 诊断：抓取页面结构")
+#endif
+
+                // 选项状态诊断按钮
+                Button {
+                    viewModel.captureOptionState()
+                } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    Circle()
+                        .fill(Color.purple.opacity(0.18))
+                )
+#if os(macOS)
+                .help("选项诊断：查看 li 元素属性")
+#endif
             }
 
             if let errorMessage = viewModel.errorMessage {
                 errorBanner(message: errorMessage)
+            }
+
+            if !viewModel.autoAnswerStatus.isEmpty {
+                autoAnswerStatusBanner
             }
         }
         .padding(.horizontal, 12)
@@ -358,6 +417,86 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .background(Color.red.opacity(0.08))
+    }
+
+    private var autoAnswerStatusBanner: some View {
+        VStack(spacing: 0) {
+            // 标题栏
+            HStack {
+                if viewModel.isAutoAnswering {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("自动答题中...")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                } else {
+                    Image(systemName: statusBannerIcon)
+                        .font(.caption)
+                        .foregroundStyle(statusBannerColor)
+                    Text("状态信息")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+
+                Spacer()
+
+                Button {
+                    ClipboardHelper.copy(viewModel.autoAnswerStatus)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    viewModel.autoAnswerStatus = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            // 内容区：上下滚动
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(viewModel.autoAnswerStatus)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 200)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(statusBannerColor.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(statusBannerColor.opacity(0.18), lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+    }
+
+    private var statusBannerIcon: String {
+        let s = viewModel.autoAnswerStatus
+        if s.contains("失败") || s.contains("异常") { return "exclamationmark.triangle.fill" }
+        if s.contains("未找到") || s.contains("未匹配") { return "info.circle.fill" }
+        return "checkmark.circle.fill"
+    }
+
+    private var statusBannerColor: Color {
+        let s = viewModel.autoAnswerStatus
+        if s.contains("失败") || s.contains("异常") { return .orange }
+        if s.contains("未找到") || s.contains("未匹配") { return .blue }
+        return .green
     }
 }
 
