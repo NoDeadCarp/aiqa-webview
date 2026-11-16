@@ -6,12 +6,60 @@ struct ContentView: View {
     /// 这里用它来持有 BrowserViewModel，保证页面刷新时不会重复创建 WebView。
     @StateObject private var viewModel = BrowserViewModel()
 
+    /// 是否显示底部工具栏（地址栏、功能按钮、状态信息）。
+    @State private var isToolbarVisible = true
+
+    /// 悬浮球当前位置（窗口坐标系）。为 nil 时按上次保存的相对位置计算。
+    @State private var ballCenter: CGPoint?
+
+    /// 开始拖动时球心的位置，用位移计算新位置，避免球突然跳到手指下面。
+    @State private var ballDragStartCenter: CGPoint?
+
+    /// 是否正在拖动（用于轻微放大反馈，也用于区分“点击”和“拖动”）。
+    @State private var isDraggingBall = false
+
+    /// 底部栏是否是被“自动答题”自动收起的：
+    /// 自动答题结束时会自动恢复；如果用户中途手动切换过，就不再干预。
+    @State private var toolbarHiddenByAuto = false
+
+    /// 悬浮球位置以相对比例保存，窗口尺寸变化后也不会跑出屏幕。
+    @AppStorage("floatingBallXRatio") private var ballXRatio = 0.94
+    @AppStorage("floatingBallYRatio") private var ballYRatio = 0.55
+
+    private let ballDiameter: CGFloat = 46
+
     var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                pageArea
+
+                // 悬浮球永远在最上层，可拖动、可点击。
+                floatingBall(in: proxy.size)
+            }
+        }
+        // 工具栏隐藏时让整个页面铺到屏幕最底部。
+        // 否则 iOS 底部安全区（Home Indicator 那条）会露出窗口底色，看起来像残留的白边。
+        .ignoresSafeArea(.container, edges: isToolbarVisible ? [] : .bottom)
+        .sheet(isPresented: $viewModel.isShowingResultDialog) {
+            resultSheet
+        }
+        .onChange(of: viewModel.isAutoMode) { _, isAutoMode in
+            handleAutoModeChange(isAutoMode)
+        }
+#if os(macOS)
+        // Mac 版浏览器窗口给大一点，更接近真正浏览器的使用习惯。
+        .frame(minWidth: 1100, minHeight: 760)
+#endif
+    }
+
+    /// 网页 + 底部工具栏。
+    /// 工具栏隐藏后这里只剩网页，加载指示也不会再显示。
+    private var pageArea: some View {
         VStack(spacing: 0) {
             WebViewContainer(webView: viewModel.webView)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .topTrailing) {
-                    if viewModel.isLoading {
+                    if viewModel.isLoading, isToolbarVisible {
                         ProgressView()
                             .controlSize(.small)
                             .padding(12)
@@ -22,15 +70,137 @@ struct ContentView: View {
                         .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
                 }
 
-            bottomToolbar
+            if isToolbarVisible {
+                bottomToolbar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        .sheet(isPresented: $viewModel.isShowingResultDialog) {
-            resultSheet
+    }
+
+    // MARK: - 悬浮球
+
+    /// 悬浮球：可拖到窗口任意位置，点击显示 / 隐藏底部工具栏。
+    private func floatingBall(in containerSize: CGSize) -> some View {
+        let center = clampedBallCenter(
+            ballCenter ?? defaultBallCenter(in: containerSize),
+            in: containerSize
+        )
+
+        return ZStack {
+            Circle()
+                .fill(.regularMaterial)
+
+            Circle()
+                .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+
+            Image(systemName: isToolbarVisible ? "chevron.down" : "chevron.up")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.secondary)
+
+            // 自动答题进行中只用一个绿色圆环提示，不显示任何文字状态。
+            if viewModel.isAutoAnswering {
+                Circle()
+                    .stroke(Color.green.opacity(0.85), lineWidth: 2)
+            }
         }
+        .frame(width: ballDiameter, height: ballDiameter)
+        .contentShape(Circle())
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        .scaleEffect(isDraggingBall ? 1.08 : 1)
+        .gesture(dragGesture(in: containerSize, currentCenter: center))
+        .accessibilityLabel(isToolbarVisible ? "隐藏工具栏" : "显示工具栏")
 #if os(macOS)
-        // Mac 版浏览器窗口给大一点，更接近真正浏览器的使用习惯。
-        .frame(minWidth: 1100, minHeight: 760)
+        .help(isToolbarVisible ? "隐藏工具栏" : "显示工具栏")
 #endif
+        .position(center)
+    }
+
+    /// 拖动与点击共用同一个手势：位移超过阈值算拖动，否则算点击。
+    private func dragGesture(in containerSize: CGSize, currentCenter: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let translation = value.translation
+
+                if !isDraggingBall {
+                    let distanceSquared = translation.width * translation.width
+                        + translation.height * translation.height
+                    guard distanceSquared > 36 else { return }
+
+                    isDraggingBall = true
+                    ballDragStartCenter = currentCenter
+                }
+
+                guard let start = ballDragStartCenter else { return }
+
+                let dragged = CGPoint(
+                    x: start.x + translation.width,
+                    y: start.y + translation.height
+                )
+                ballCenter = clampedBallCenter(dragged, in: containerSize)
+            }
+            .onEnded { _ in
+                let wasDragging = isDraggingBall
+                isDraggingBall = false
+                ballDragStartCenter = nil
+
+                if wasDragging {
+                    guard let finalCenter = ballCenter else { return }
+                    let clamped = clampedBallCenter(finalCenter, in: containerSize)
+                    ballCenter = clamped
+
+                    // 保存相对比例，下次启动 / 窗口缩放后位置依然合理。
+                    ballXRatio = Double(clamped.x / max(containerSize.width, 1))
+                    ballYRatio = Double(clamped.y / max(containerSize.height, 1))
+                } else {
+                    // 基本没有位移：当成点击，切换工具栏显隐。
+                    toggleToolbarVisibility()
+                }
+            }
+    }
+
+    private func defaultBallCenter(in containerSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: containerSize.width * ballXRatio,
+            y: containerSize.height * ballYRatio
+        )
+    }
+
+    /// 保证球始终完整留在窗口内。
+    private func clampedBallCenter(_ center: CGPoint, in containerSize: CGSize) -> CGPoint {
+        let margin = ballDiameter / 2 + 8
+
+        return CGPoint(
+            x: min(max(center.x, margin), max(margin, containerSize.width - margin)),
+            y: min(max(center.y, margin), max(margin, containerSize.height - margin))
+        )
+    }
+
+    private func toggleToolbarVisibility() {
+        // 用户手动切换过，就不再让“自动答题结束”去恢复它。
+        toolbarHiddenByAuto = false
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isToolbarVisible.toggle()
+        }
+    }
+
+    /// 自动答题开始 / 结束时联动工具栏：
+    /// - 开始：自动收起底部栏，只保留网页和悬浮球，不显示状态信息
+    /// - 结束：如果此前是被自动收起的，就自动恢复，方便查看最终结果
+    private func handleAutoModeChange(_ isAutoMode: Bool) {
+        if isAutoMode {
+            if isToolbarVisible {
+                toolbarHiddenByAuto = true
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isToolbarVisible = false
+                }
+            }
+        } else if toolbarHiddenByAuto {
+            toolbarHiddenByAuto = false
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isToolbarVisible = true
+            }
+        }
     }
 
     /// 底部工具栏改成更接近 Safari 的思路：
